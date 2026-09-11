@@ -400,12 +400,12 @@ class PortalScraper:
             self.progress(f"Found {self._total_records} total records")
             for row_number, (row, detail_url) in enumerate(rows):
                 self._checkpoint()
-                record = dict(row)
-                if detail_url:
-                    record.update(self._read_detail(page, detail_url))
                 if self._add_result_to_cart(page, row_number):
                     self._cart_records += 1
                     self.progress(f"Added {self._cart_records} of {self._total_records} records to cart")
+                record = dict(row)
+                if detail_url:
+                    record.update(self._read_detail(page, detail_url))
                 self._store_record(record, detail_url)
             next_link = self._next_link(page)
             if next_link is None:
@@ -425,8 +425,8 @@ class PortalScraper:
             return False
         row = rows.nth(row_number)
         menu_candidates = [
-            row.locator("button[aria-label*='more' i], button[aria-label*='action' i], button[aria-label*='menu' i]").last,
-            row.locator("button:has-text('...'), [data-testid*='menu' i], [data-testid*='ellipsis' i]").last,
+            row.locator("button[aria-label*='ellipsis' i], button[aria-label*='more' i], button[aria-label*='action' i]").last,
+            row.locator("button:has-text('...'), [data-testid*='ellipsis' i], [data-testid*='menu' i]").last,
             row.get_by_role("button").last,
         ]
         for attempt in range(3):
@@ -436,14 +436,17 @@ class PortalScraper:
                 if menu is None:
                     return False
                 menu.click()
-                menu_item = page.get_by_text(re.compile(r"add to cart", re.I)).last
+                menu_item = page.get_by_role("menuitem", name=re.compile(r"^add\s+to\s+cart$", re.I)).last
+                if not menu_item.count():
+                    menu_item = page.get_by_text(re.compile(r"^add\s+to\s+cart$", re.I)).last
                 menu_item.wait_for(state="visible", timeout=5000)
                 menu_item.click()
                 modal = page.locator("[role='dialog'], .modal, [class*='modal' i]").last
                 modal.wait_for(state="visible", timeout=10000)
-                add_button = modal.get_by_role("button", name=re.compile(r"^add$|add to cart", re.I)).last
+                add_button = modal.get_by_role("button", name=re.compile(r"^add$", re.I)).last
                 if not add_button.count():
-                    add_button = modal.locator("button:has-text('Add')").last
+                    add_button = modal.locator("button").filter(has_text=re.compile(r"^add$", re.I)).last
+                add_button.wait_for(state="visible", timeout=10000)
                 add_button.click()
                 modal.wait_for(state="hidden", timeout=15000)
                 self._throttle()
