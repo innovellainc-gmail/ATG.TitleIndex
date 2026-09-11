@@ -31,10 +31,11 @@ LOGGER = logging.getLogger("dona_ana_indexer")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 METADATA_FIELDS = [
-    "Legal Description", "County", "Grantor", "Grantee", "Volume", "Page",
-    "Instrument Date", "Instrument Number", "Section", "Township", "Range or Block (S-T-R)",
+    "Legal Description", "Section", "Town", "Subdivision", "Lot", "Range", "Block",
+    "County", "Grantor", "Grantee", "Volume", "Page",
+    "Instrument Date", "Instrument Number", "Township", "Range or Block (S-T-R)",
     "Abstract Number", "Survey", "Quarter Call", "Book Type", "Instrument Type",
-    "Instrument Type Alias", "Subdivision", "Subdivision Alias", "Lot (Sub)", "Block (Sub)",
+    "Instrument Type Alias", "Subdivision Alias", "Lot (Sub)", "Block (Sub)",
     "Acres", "File Date", "Instrument Type Group", "Prior Reference Instrument Number",
     "Prior Reference Volume", "Prior Reference Page", "State", "APN #", "Street Address",
     "City (Address)", "State (Address)", "Zip (Address)", "Tract Description (City Block)",
@@ -87,6 +88,12 @@ class RecordDatabase:
         ])
         with self.connect() as connection:
             connection.execute(f"CREATE TABLE IF NOT EXISTS indexed_documents ({', '.join(columns)})")
+            existing_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(indexed_documents)").fetchall()
+            }
+            for field in ALL_FIELDS:
+                if field not in existing_columns:
+                    connection.execute(f"ALTER TABLE indexed_documents ADD COLUMN {_quote_identifier(field)} TEXT")
             connection.execute(
                 'CREATE INDEX IF NOT EXISTS idx_indexed_documents_instrument '
                 'ON indexed_documents("Instrument Number")'
@@ -432,38 +439,50 @@ class PortalScraper:
             page_number += 1
 
     def _add_result_to_cart(self, page: Any, row_number: int) -> bool:
-        rows = page.locator("table tbody tr, [role='row']")
+        results_table = page.locator("table").filter(
+            has=page.locator("caption").filter(
+                has_text=re.compile(r"Search results table for Real Property", re.I)
+            )
+        )
+        results_table.wait_for(state="visible", timeout=30000)
+        rows = results_table.locator("tbody").locator("tr")
         if row_number >= rows.count():
             self.progress("Could not locate the result row action menu; record metadata was retained")
             return False
         row = rows.nth(row_number)
-        menu_candidates = [
-            row.locator("button.menu__control").last,
-            row.locator("button[aria-label*='ellipsis' i]").last,
-            row.locator("button:has-text('...'), [data-testid*='ellipsis' i]").last,
-        ]
         for attempt in range(3):
             try:
                 self._checkpoint()
-                menu = next((candidate for candidate in menu_candidates if candidate.count() and candidate.is_visible()), None)
-                if menu is None:
-                    return False
+                menu = row.locator(
+                    "button.a11y-menu__control[data-tourid='menu__control']"
+                ).last
+                menu.wait_for(state="visible", timeout=10000)
                 menu.click()
-                menu_item = page.get_by_role("menuitem", name=re.compile(r"^add\s+to\s+cart$", re.I)).last
-                if not menu_item.count():
-                    menu_item = page.get_by_text(re.compile(r"^add\s+to\s+cart$", re.I)).last
+                menu_item = page.locator(
+                    "button[data-testid='documentAction']"
+                ).filter(has_text=re.compile(r"^add\s+to\s+cart$", re.I)).last
                 menu_item.wait_for(state="visible", timeout=5000)
                 menu_item.click()
-                modal = page.locator("[role='dialog']").filter(has_text=re.compile(r"add\s+to\s+cart", re.I)).last
+                modal = page.locator("[role='dialog']").filter(
+                    has_text=re.compile(r"add\s+to\s+cart", re.I)
+                ).last
                 if not modal.count():
-                    modal = page.locator(".modal, [class*='modal' i]").filter(has_text=re.compile(r"add\s+to\s+cart", re.I)).last
+                    modal = page.locator(".modal, [class*='modal' i]").filter(
+                        has_text=re.compile(r"add\s+to\s+cart", re.I)
+                    ).last
                 modal.wait_for(state="visible", timeout=10000)
-                add_button = modal.get_by_role("button", name=re.compile(r"^add$", re.I)).last
-                if not add_button.count():
-                    add_button = modal.locator("button").filter(has_text=re.compile(r"^add$", re.I)).last
+                add_button = modal.locator("button").filter(
+                    has_text=re.compile(r"^add(?:\s+to\s+cart)?$", re.I)
+                ).last
                 add_button.wait_for(state="visible", timeout=10000)
                 add_button.click()
                 modal.wait_for(state="hidden", timeout=15000)
+                next_row = rows.nth(row_number + 1)
+                if row_number + 1 < rows.count():
+                    next_row.wait_for(state="visible", timeout=30000)
+                    next_row.locator(
+                        "button.a11y-menu__control[data-tourid='menu__control']"
+                    ).wait_for(state="visible", timeout=30000)
                 self._throttle()
                 return True
             except Exception as error:
@@ -481,35 +500,39 @@ class PortalScraper:
             return
         self._checkpoint()
         self.progress("Opening cart")
-        cart = page.get_by_role("link", name=re.compile(r"^cart", re.I)).first
-        if not cart.count():
-            cart = page.get_by_text(re.compile(r"^cart", re.I)).first
+        cart = page.locator("p[data-testid='cart'].css-ye3715").first
         if not cart.count() or not cart.is_visible():
             navigation_menu = page.locator("[controls='nav-menu'], button[controls='nav-menu'], [aria-controls='nav-menu']").first
             if navigation_menu.count() and navigation_menu.is_visible():
                 navigation_menu.click()
-                cart = page.get_by_role("link", name=re.compile(r"^cart", re.I)).first
-                if not cart.count():
-                    cart = page.get_by_text(re.compile(r"^cart", re.I)).first
+                cart = page.locator("p[data-testid='cart'].css-ye3715").first
         cart.wait_for(state="visible", timeout=30000)
-        with page.context.expect_page() as cart_page_info:
-            cart.click()
-        cart_page = cart_page_info.value
+        pages_before_click = set(page.context.pages)
+        cart.click()
+        cart_page = page
+        cart_navigation_deadline = time.monotonic() + 30000 / 1000
+        while time.monotonic() < cart_navigation_deadline:
+            new_pages = [candidate for candidate in page.context.pages if candidate not in pages_before_click]
+            if new_pages:
+                cart_page = new_pages[-1]
+                break
+            time.sleep(0.1)
         cart_page.wait_for_load_state("domcontentloaded", timeout=30000)
         self._wait_for_network_idle(cart_page)
-        order = cart_page.get_by_role("button", name=re.compile(r"^place your order$", re.I)).first
-        if not order.count():
-            order = cart_page.get_by_text(re.compile(r"^place your order$", re.I)).first
-        order.wait_for(state="visible", timeout=30000)
+        shopping_cart = cart_page.get_by_text(re.compile(r"shopping cart", re.I)).first
+        if shopping_cart.count():
+            shopping_cart.wait_for(state="visible", timeout=300000)
+        order = cart_page.locator("a[data-testid='orderButton'].css-1iwc97t").first
+        order.wait_for(state="visible", timeout=300000)
         order.click()
         cart_page.wait_for_load_state("domcontentloaded", timeout=30000)
-        self._wait_for_network_idle(cart_page)
         self.progress("Order placed; downloading original documents")
-        download_button = cart_page.get_by_role("button", name=re.compile(r"^download all documents$", re.I)).first
-        if not download_button.count():
-            download_button = cart_page.get_by_text(re.compile(r"^download all documents$", re.I)).first
-        download_button.wait_for(state="visible", timeout=30000)
-        with cart_page.expect_download(timeout=120000) as download_info:
+        download_button = cart_page.locator("button.css-kcz2et").first
+        download_button.wait_for(state="attached", timeout=300000)
+        download_button.wait_for(state="visible", timeout=300000)
+        if not download_button.is_enabled():
+            raise RuntimeError("Download All Documents button is rendered but disabled.")
+        with cart_page.expect_download(timeout=150000) as download_info:
             download_button.click()
         download = download_info.value
         package_path = self.document_directory / "original_documents_package"
@@ -549,7 +572,11 @@ class PortalScraper:
         return directory / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{step}.png"
 
     def _table_rows(self, page: Any) -> list[tuple[dict[str, str], str | None]]:
-        tables = page.locator("table")
+        tables = page.locator("table").filter(
+            has=page.locator("caption").filter(
+                has_text=re.compile(r"Search results table for Real Property", re.I)
+            )
+        )
         for table_index in range(tables.count()):
             table = tables.nth(table_index)
             headers = [_normalise(text) for text in table.locator("thead th").all_text_contents()]
@@ -643,7 +670,32 @@ class PortalScraper:
                 if candidate in normalised and normalised[candidate]:
                     mapped[field] = normalised[candidate]
                     break
+        mapped.update(PortalScraper._parse_legal_description(mapped.get("Legal Description", "")))
         return mapped
+
+    @staticmethod
+    def _parse_legal_description(description: str) -> dict[str, str]:
+        derived = {field: "" for field in ("Section", "Town", "Subdivision", "Lot", "Range", "Block")}
+        if not description or description.strip().upper() == "N/A":
+            return derived
+        aliases = {
+            "section": "Section",
+            "town": "Town",
+            "township": "Town",
+            "subdivision": "Subdivision",
+            "lot": "Lot",
+            "range": "Range",
+            "block": "Block",
+        }
+        for segment in description.split(","):
+            if ":" not in segment:
+                continue
+            label, value = segment.split(":", 1)
+            field = aliases.get(_normalise(label))
+            value = value.strip()
+            if field and value and value.upper() != "N/A":
+                derived[field] = value
+        return derived
 
     @staticmethod
     def _next_link(page: Any) -> Any | None:
@@ -778,15 +830,25 @@ def _render_table(database: RecordDatabase, search: str) -> None:
     if frame.empty:
         st.info("No indexed records match the current search.")
     else:
+        display_frame = frame[
+            [
+                "Instrument Number", "Legal Description", "Section", "Town", "Subdivision",
+                "Lot", "Range", "Block", "Instrument Date", "Grantor", "Grantee",
+                "Street Address", "City (Address)", "State (Address)", "Zip (Address)",
+                "source_url",
+            ]
+        ].rename(columns={"source_url": "Original document URL"})
         st.dataframe(
-            frame[
-                [
-                    "Instrument Number", "Instrument Date", "Grantor", "Grantee",
-                    "Street Address", "City (Address)", "State (Address)", "Zip (Address)",
-                ]
-            ],
+            display_frame,
             width="stretch",
+            height=420,
             hide_index=True,
+            column_config={
+                "Instrument Number": st.column_config.TextColumn("INST NUMBER"),
+                "Original document URL": st.column_config.LinkColumn(
+                    "Original document URL", display_text="Open portal document"
+                ),
+            },
         )
     return frame
 
