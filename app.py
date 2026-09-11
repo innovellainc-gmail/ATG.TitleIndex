@@ -131,6 +131,10 @@ class RecordDatabase:
         with self.connect() as connection:
             return int(connection.execute("SELECT COUNT(*) FROM indexed_documents").fetchone()[0])
 
+    def clear_records(self) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM indexed_documents")
+
     def get_record(self, record_hash: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(
@@ -187,6 +191,13 @@ class PortalScraper:
         if self.options.throttle_seconds > 0:
             time.sleep(self.options.throttle_seconds)
 
+    def _wait_for_network_idle(self, page: Any, timeout: int = 30000) -> None:
+        try:
+            page.wait_for_load_state("networkidle", timeout=timeout)
+        except Exception as error:
+            LOGGER.info("Network idle wait timed out; continuing with DOM readiness checks: %s", error)
+            self.progress("Portal is still loading background requests; continuing when required controls are ready")
+
     def run(self) -> None:
         try:
             from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -223,7 +234,9 @@ class PortalScraper:
                 self._paginate_and_add_to_cart(page, api_records)
                 self._checkout_cart(page)
             except PlaywrightTimeoutError as error:
-                raise RuntimeError("The records portal did not respond before the browser timeout.") from error
+                LOGGER.error("Playwright timed out during portal automation: %s", error)
+                self.progress(f"Portal automation timed out while waiting for a control: {error}")
+                raise
             except Exception:
                 try:
                     screenshot = self._failure_screenshot("automation")
@@ -242,7 +255,7 @@ class PortalScraper:
         self._checkpoint()
         self.progress("Opening the Doña Ana County records portal")
         page.goto(self.options.website_url, wait_until="domcontentloaded")
-        page.wait_for_load_state("networkidle", timeout=30000)
+        self._wait_for_network_idle(page)
         self._sign_in(page)
         self._select_search_type(page)
         start_date_input = page.get_by_role("textbox", name="Starting Recorded Date")
@@ -263,7 +276,7 @@ class PortalScraper:
         )
         search_button.wait_for(state="visible", timeout=30000)
         search_button.click()
-        page.wait_for_load_state("networkidle", timeout=30000)
+        self._wait_for_network_idle(page)
         try:
             page.locator("table tbody tr, [role='row']").first.wait_for(state="attached", timeout=30000)
         except PlaywrightTimeoutError:
@@ -312,7 +325,7 @@ class PortalScraper:
             raise RuntimeError("Could not find the Sign In link on the records portal.")
 
         sign_in_link.click()
-        page.wait_for_load_state("networkidle", timeout=30000)
+        self._wait_for_network_idle(page)
         page.get_by_role("heading", name=re.compile(r"^sign\s*in$", re.I)).wait_for(
             state="visible", timeout=30000
         )
@@ -325,7 +338,7 @@ class PortalScraper:
         if not sign_in_button.count() or not sign_in_button.is_visible():
             raise RuntimeError("Could not find the Sign In button on the portal sign-in page.")
         sign_in_button.click()
-        page.wait_for_load_state("networkidle", timeout=30000)
+        self._wait_for_network_idle(page)
         quick_search = page.get_by_role("tab", name=re.compile(r"^quick\s*search$", re.I)).first
         if not quick_search.count():
             quick_search = page.get_by_text(re.compile(r"^quick\s*search$", re.I)).first
@@ -415,7 +428,7 @@ class PortalScraper:
                 break
             seen.add(marker)
             next_link.click()
-            page.wait_for_load_state("networkidle", timeout=30000)
+            self._wait_for_network_idle(page)
             page_number += 1
 
     def _add_result_to_cart(self, page: Any, row_number: int) -> bool:
@@ -425,9 +438,9 @@ class PortalScraper:
             return False
         row = rows.nth(row_number)
         menu_candidates = [
-            row.locator("button[aria-label*='ellipsis' i], button[aria-label*='more' i], button[aria-label*='action' i]").last,
-            row.locator("button:has-text('...'), [data-testid*='ellipsis' i], [data-testid*='menu' i]").last,
-            row.get_by_role("button").last,
+            row.locator("button.menu__control").last,
+            row.locator("button[aria-label*='ellipsis' i]").last,
+            row.locator("button:has-text('...'), [data-testid*='ellipsis' i]").last,
         ]
         for attempt in range(3):
             try:
@@ -441,7 +454,9 @@ class PortalScraper:
                     menu_item = page.get_by_text(re.compile(r"^add\s+to\s+cart$", re.I)).last
                 menu_item.wait_for(state="visible", timeout=5000)
                 menu_item.click()
-                modal = page.locator("[role='dialog'], .modal, [class*='modal' i]").last
+                modal = page.locator("[role='dialog']").filter(has_text=re.compile(r"add\s+to\s+cart", re.I)).last
+                if not modal.count():
+                    modal = page.locator(".modal, [class*='modal' i]").filter(has_text=re.compile(r"add\s+to\s+cart", re.I)).last
                 modal.wait_for(state="visible", timeout=10000)
                 add_button = modal.get_by_role("button", name=re.compile(r"^add$", re.I)).last
                 if not add_button.count():
@@ -481,14 +496,14 @@ class PortalScraper:
             cart.click()
         cart_page = cart_page_info.value
         cart_page.wait_for_load_state("domcontentloaded", timeout=30000)
-        cart_page.wait_for_load_state("networkidle", timeout=30000)
+        self._wait_for_network_idle(cart_page)
         order = cart_page.get_by_role("button", name=re.compile(r"^place your order$", re.I)).first
         if not order.count():
             order = cart_page.get_by_text(re.compile(r"^place your order$", re.I)).first
         order.wait_for(state="visible", timeout=30000)
         order.click()
         cart_page.wait_for_load_state("domcontentloaded", timeout=30000)
-        cart_page.wait_for_load_state("networkidle", timeout=30000)
+        self._wait_for_network_idle(cart_page)
         self.progress("Order placed; downloading original documents")
         download_button = cart_page.get_by_role("button", name=re.compile(r"^download all documents$", re.I)).first
         if not download_button.count():
@@ -559,7 +574,7 @@ class PortalScraper:
         detail.set_default_timeout(12000)
         try:
             detail.goto(urljoin(PORTAL_URL, detail_url), wait_until="domcontentloaded")
-            detail.wait_for_load_state("networkidle", timeout=25000)
+            self._wait_for_network_idle(detail, timeout=25000)
             values: dict[str, str] = {}
             for label in detail.locator("dt, th, .label, [class*='label' i]").all_text_contents():
                 key = _normalise(label)
@@ -832,6 +847,10 @@ def main() -> None:
                     database,
                 )
                 st.rerun()
+        if st.button("Clear indexed results", width="stretch", disabled=status["running"]):
+            database.clear_records()
+            status.update(message="Indexed results cleared", error="", logs=[], total_records=0, cart_records=0)
+            st.rerun()
         if status["running"]:
             controls = st.session_state.get("execution_controls", {})
             pause_event = controls.get("pause")
