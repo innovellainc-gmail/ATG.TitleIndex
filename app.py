@@ -149,6 +149,14 @@ class RecordDatabase:
             ).fetchone()
         return dict(row) if row else None
 
+    def set_document_path(self, instrument_number: str, file_path: Path) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                'UPDATE indexed_documents SET "local_file_path" = ?, "source_url" = ? '
+                'WHERE "Instrument Number" = ?',
+                [str(file_path), file_path.resolve().as_uri(), instrument_number],
+            )
+
     def csv_bytes(self, search: str = "") -> bytes:
         frame = self.list_records(search, limit=100000)
         output = io.StringIO()
@@ -527,16 +535,17 @@ class PortalScraper:
         order.click()
         cart_page.wait_for_load_state("domcontentloaded", timeout=30000)
         self.progress("Order placed; downloading original documents")
-        download_button = cart_page.locator("button.css-kcz2et").first
-        download_button.wait_for(state="attached", timeout=300000)
-        download_button.wait_for(state="visible", timeout=300000)
+        package_path = self.document_directory / "original_documents_package"
+        package_path.mkdir(parents=True, exist_ok=True)
+        cart_pdf_files = self._download_cart_pdfs(cart_page, package_path)
+        download_buttons = cart_page.locator("button.css-kcz2et")
+        download_buttons.first.wait_for(state="attached", timeout=300000)
+        download_button = self._wait_for_download_all_button(cart_page, download_buttons)
         if not download_button.is_enabled():
             raise RuntimeError("Download All Documents button is rendered but disabled.")
         with cart_page.expect_download(timeout=150000) as download_info:
             download_button.click()
         download = download_info.value
-        package_path = self.document_directory / "original_documents_package"
-        package_path.mkdir(parents=True, exist_ok=True)
         archive_path = package_path / (download.suggested_filename or "documents_package.zip")
         download.save_as(str(archive_path))
         extracted_files: list[str] = []
@@ -559,12 +568,81 @@ class PortalScraper:
             "package": "ORIGINAL_DOCUMENT_IMAGES",
             "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "source": self.options.website_url,
-            "files": extracted_files,
+            "files": sorted(set(extracted_files + cart_pdf_files)),
         }
         (package_path / "ORIGINAL_DOCUMENT_IMAGES.manifest.json").write_text(
             json.dumps(manifest, indent=2), encoding="utf-8"
         )
-        self.progress(f"Downloaded {len(extracted_files)} original document files")
+        self.progress(f"Downloaded {len(set(extracted_files + cart_pdf_files))} original document files")
+
+    @staticmethod
+    def _wait_for_download_all_button(page: Any, buttons: Any) -> Any:
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
+            for index in range(buttons.count()):
+                try:
+                    candidate = buttons.nth(index)
+                    if not candidate.is_visible():
+                        continue
+                    text = (candidate.inner_text() or "").strip().lower()
+                    aria_label = (candidate.get_attribute("aria-label") or "").lower()
+                    title_text = " ".join(candidate.locator("title").all_text_contents()).lower()
+                    accessible_text = " ".join((text, aria_label, title_text))
+                    if "download all documents" in accessible_text and "download pdf" not in accessible_text:
+                        return candidate
+                except Exception:
+                    continue
+            time.sleep(0.25)
+        raise RuntimeError("Download All Documents button was not rendered on the Cart page.")
+
+    def _download_cart_pdfs(self, cart_page: Any, package_path: Path) -> list[str]:
+        download_buttons = cart_page.locator("button.css-kcz2et").filter(
+            has_text=re.compile(r"download\s+pdf", re.I)
+        )
+        download_buttons.first.wait_for(state="attached", timeout=300000)
+        records = self.database.list_records(limit=100000).to_dict("records")
+        record_by_instrument = {
+            str(record.get("Instrument Number", "")).strip(): record
+            for record in records
+            if str(record.get("Instrument Number", "")).strip()
+        }
+        saved_files: list[str] = []
+        for index in range(download_buttons.count()):
+            self._checkpoint()
+            button = download_buttons.nth(index)
+            button.wait_for(state="visible", timeout=300000)
+            text = ""
+            for level in range(1, 7):
+                ancestor = button.locator("xpath=" + "/.." * level).first
+                if not ancestor.count():
+                    continue
+                candidate_text = ancestor.inner_text()
+                if any(instrument in candidate_text for instrument in record_by_instrument):
+                    text = candidate_text
+                    break
+            if not text:
+                text = button.locator("xpath=..").inner_text()
+            record = next(
+                (candidate for instrument, candidate in record_by_instrument.items() if instrument in text),
+                None,
+            )
+            if record is None:
+                self.progress(f"Could not match cart PDF {index + 1} to an instrument number")
+                continue
+            instrument = str(record.get("Instrument Number", "")).strip()
+            document_type = str(
+                record.get("Instrument Type") or record.get("Book Type") or "Document"
+            ).strip() or "Document"
+            safe_name = re.sub(r"[<>:\"/\\|?*]+", "_", f"{instrument}_{document_type}").strip()
+            destination = package_path / f"{safe_name}.PDF"
+            with cart_page.expect_download(timeout=150000) as download_info:
+                button.click()
+            download = download_info.value
+            download.save_as(str(destination))
+            self.database.set_document_path(instrument, destination)
+            saved_files.append(str(destination))
+            self.progress(f"Downloaded PDF for instrument {instrument}")
+        return saved_files
 
     def _failure_screenshot(self, step: str) -> Path:
         directory = self.document_directory / "failure_screenshots"
