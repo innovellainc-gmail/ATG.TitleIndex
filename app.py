@@ -40,7 +40,9 @@ METADATA_FIELDS = [
     "Prior Reference Volume", "Prior Reference Page", "State", "APN #", "Street Address",
     "City (Address)", "State (Address)", "Zip (Address)", "Tract Description (City Block)",
 ]
-STORAGE_FIELDS = ["local_file_path", "source_url", "indexed_at", "record_hash", "scrape_error"]
+STORAGE_FIELDS = [
+    "local_file_path", "original_document_file", "source_url", "indexed_at", "record_hash", "scrape_error"
+]
 ALL_FIELDS = METADATA_FIELDS + STORAGE_FIELDS
 
 
@@ -95,6 +97,11 @@ class RecordDatabase:
             for field in ALL_FIELDS:
                 if field not in existing_columns:
                     connection.execute(f"ALTER TABLE indexed_documents ADD COLUMN {_quote_identifier(field)} TEXT")
+            connection.execute(
+                'UPDATE indexed_documents SET "source_url" = ? '
+                'WHERE "source_url" LIKE \'file://%\'',
+                [PORTAL_URL],
+            )
             connection.execute(
                 'CREATE INDEX IF NOT EXISTS idx_indexed_documents_instrument '
                 'ON indexed_documents("Instrument Number")'
@@ -153,9 +160,11 @@ class RecordDatabase:
     def set_document_path(self, instrument_number: str, file_path: Path) -> None:
         with self.connect() as connection:
             connection.execute(
-                'UPDATE indexed_documents SET "local_file_path" = ?, "source_url" = ? '
+                'UPDATE indexed_documents SET "local_file_path" = ?, "original_document_file" = ?, '
+                '"source_url" = CASE WHEN "source_url" IS NULL OR "source_url" = "" '
+                'OR "source_url" LIKE \'file://%\' THEN ? ELSE "source_url" END '
                 'WHERE "Instrument Number" = ?',
-                [str(file_path), file_path.resolve().as_uri(), instrument_number],
+                [str(file_path), str(file_path), PORTAL_URL, instrument_number],
             )
 
     def csv_bytes(self, search: str = "") -> bytes:
@@ -863,7 +872,6 @@ def _render_document_preview(record: dict[str, Any]) -> None:
         st.html(
             f'<iframe src="data:application/pdf;base64,{encoded}" width="100%" height="760" '
             'style="border:1px solid #d7dce5;border-radius:8px;"></iframe>',
-            height=780,
         )
     else:
         st.info(f"The saved document format ({suffix or 'unknown'}) cannot be previewed in the browser.")
