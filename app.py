@@ -53,6 +53,7 @@ def _normalise(value: str) -> str:
 
 
 FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "Instrument Number": ("inst number", "instrument no", "instrument #", "document number", "doc number"),
     "Range or Block (S-T-R)": ("range", "block", "range or block", "s t r", "str"),
     "APN #": ("apn", "parcel number", "parcel id", "tax id"),
     "Lot (Sub)": ("lot", "lot sub"),
@@ -669,6 +670,11 @@ class PortalScraper:
                 row = body_rows.nth(index)
                 cells = row.locator("td").all_text_contents()
                 values = {header: cells[position].strip() for position, header in enumerate(headers) if position < len(cells)}
+                instrument_cell = row.locator("td.css-tlx2m5").first
+                if instrument_cell.count():
+                    instrument_number = instrument_cell.inner_text().strip()
+                    if instrument_number:
+                        values["Instrument Number"] = instrument_number
                 link = row.locator("a[href]").first
                 result.append((self._map_fields(values), link.get_attribute("href") if link.count() else None))
             return result
