@@ -5,92 +5,48 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 
-# Hardcoded target variables from your verified browser network footprint
 BASE_URL = "https://donaana.nm.publicsearch.us"
-TARGET_DOC_ID = "118511438" # This is instrument number 723762
+TARGET_DOC_ID = "118511438"
 
-# 1. Manually build the EXACT query string verified by your browser console
-# Note the explicit %2C URL encoding for the date range split parameter
-QUERY_STRING = "department=RP&keywordSearch=false&recordedDateRange=19000101%2C19800107&searchOcrText=false&searchType=quickSearch&searchValue=doe"
-TARGET_RESULTS_URL = f"{BASE_URL}/results?{QUERY_STRING}"
+# FIX: Target the direct internal HTML partial sub-route used to serve the summary content
+TARGET_PARTIAL_URL = f"{BASE_URL}/doc/{TARGET_DOC_ID}/initial"
 
 session = requests.Session()
-
-# Inject your verified persistent browser authentication session tokens
 session.cookies.update({
     "authToken": "25af87ab-dbfc-4a04-818d-4a1b12c0cd6e",
     "authToken.sig": "jxPPnMHPIk62NJbem7TFsyYz9xA"
 })
-
-# Update complete anti-bot headers and add the correct base Referer pointer
 session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "same-origin",
-    "Sec-Fetch-User": "?1",
-    # FIX: Point the referrer to the main landing page to mimic an authentic user click path
-#    "Referer": f"{BASE_URL}/results?department=RP&keywordSearch=false&recordedDateRange=19000101%2C19800107&searchOcrText=false&searchType=quickSearch&searchValue=doe"
-#    "Referer": f"{BASE_URL}/"
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    # Point referer to the base document view to satisfy security checks
+    "Referer": f"{BASE_URL}/doc/{TARGET_DOC_ID}"
 })
 
-def execute_final_extraction():
-    print(f"Requesting hardcoded results index page:\n{TARGET_RESULTS_URL}\n")
-    response = session.get(TARGET_RESULTS_URL)
+def extract_summary_direct():
+    print(f"Fetching direct data segment from: {TARGET_PARTIAL_URL}")
+    response = session.get(TARGET_PARTIAL_URL)
     
     if response.status_code != 200:
-        print(f"[CRITICAL] Access blocked by firewall. Status code: {response.status_code}")
+        print(f"[ERROR] Access denied. Status code: {response.status_code}")
         return
-
+        
     soup = BeautifulSoup(response.text, 'html.parser')
     record_fields = {}
+    
+    # Isolate all standard table data grid values or definition blocks inside the returned partial layout
+    rows = soup.find_all(['tr', 'div', 'dt'])
+    
+    # Process text layout map lines directly
+    text_lines = [line.strip() for line in soup.get_text(separator="\n").split("\n") if line.strip()]
+    
+    # Neumo structures these text arrays sequentially: [Label, Value, Label, Value]
+    for i in range(0, len(text_lines) - 1, 2):
+        key = text_lines[i].replace(":", "").strip()
+        val = text_lines[i+1].strip()
+        if key and val and len(key) < 50:  # Enforce reasonable constraint boundaries on keys
+            record_fields[key] = val
 
-    print("Analyzing page body layout structure...")
-
-    # --- PHASE 1: Scan for the hidden global JSON state tree ---
-    for script in soup.find_all('script'):
-        script_content = script.string if script.string else ""
-        if "STATE__" in script_content or "results" in script_content:
-            try:
-                # Find any nested JSON dictionary object configuration strings
-                json_match = re.search(r'(\{.*\})', script_content)
-                if json_match:
-                    state_data = json.loads(json_match.group(1))
-                    
-                    # Recursively walk the decrypted JSON memory tree to grab the target document ID
-                    found_dict = search_json_tree_for_doc(state_data, TARGET_DOC_ID)
-                    if found_dict:
-                        print(" -> [SUCCESS] Isolated target document dictionary from internal JavaScript state memory!")
-                        record_fields = {str(k): str(v) for k, v in found_dict.items() if v is not None}
-                        break
-            except Exception:
-                pass
-
-    # --- PHASE 2: Fallback to a deep text container sweep if scripts are clean ---
-    if not record_fields:
-        print(" -> Data state empty. Initiating fallback deep HTML text block sweep...")
-        
-        # Pull every text line from the document container to see if the ID is listed anywhere
-        all_text_blocks = soup.get_text(separator="\n").split("\n")
-        clean_blocks = [b.strip() for b in all_text_blocks if b.strip()]
-        
-        # If the targeted Document ID string exists in the page, grab the nearby strings as a fallback
-        if any(TARGET_DOC_ID in block for block in clean_blocks):
-            print(f" -> [SUCCESS] Located raw string entries matching ID '{TARGET_DOC_ID}' on the page.")
-            for idx, chunk in enumerate(clean_blocks):
-                if TARGET_DOC_ID in chunk:
-                    # Capture a window of 10 text metrics before and after the matched ID line
-                    start = max(0, idx - 4)
-                    end = min(len(clean_blocks), idx + 10)
-                    for fallback_idx, i in enumerate(range(start, end)):
-                        record_fields[f"Context_Line_{fallback_idx}"] = clean_blocks[i]
-                    break
-
-    # --- PHASE 3: Compile and write output directly to your Excel file ---
     if record_fields:
         df = pd.DataFrame(list(record_fields.items()), columns=['Summary Field Name', 'Extracted Record Value'])
         df.insert(0, 'Document ID', TARGET_DOC_ID)
@@ -98,32 +54,13 @@ def execute_final_extraction():
         os.makedirs('generated', exist_ok=True)
         output_path = "generated/extracted_document_summary.xlsx"
         df.to_excel(output_path, index=False)
-        print(f"\n=== [FINISHED] Summary file written safely to: {output_path} ===")
-        for k, v in list(record_fields.items())[:5]: # Print the first 5 variables to check
+        print(f"\n=== [SUCCESS] Summary successfully generated at: {output_path} ===")
+        for k, v in list(record_fields.items())[:5]:
             print(f"   * {k}: {v}")
     else:
-        print(f"\n[CRITICAL ERROR] Extraction returned an empty layout. Please open the browser, perform the search 'doe', and verify if your cookies have rolled over.")
+        print("\n[CRITICAL ERROR] The partial layout string returned empty text nodes. Please inspect response.text data.")
 
-def search_json_tree_for_doc(element, target_id):
-    """Deep search helper to find an object containing our target ID string."""
-    if isinstance(element, dict):
-        # Check if this specific object level represents our target record card block
-        id_val = str(element.get('id', '')) or str(element.get('documentId', ''))
-        if id_val == target_id:
-            return element
-        for key, val in element.items():
-            result = search_json_tree_for_doc(val, target_id)
-            if result:
-                return result
-    elif isinstance(element, list):
-        for item in element:
-            result = search_json_tree_for_doc(item, target_id)
-            if result:
-                return result
-    return None
-
-# Execute the final compilation sequence
-execute_final_extraction()
+extract_summary_direct()
 
 
 
