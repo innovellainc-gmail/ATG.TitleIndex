@@ -23,9 +23,9 @@ TARGET_URL = f"{BASE_URL}/doc/{TARGET_DOC_ID}"
 def extract_strict_schema_fields():
     print("Launching Chromium browser automation framework...")
     
-    # 1. Hardcode your exact 34 required title index fields as a clean schema framework
+    # 1. Your 34 required title index fields
     required_schema = [
-        "Legal Description", "County", "Grantor", "Grantee", "Volume", "Page", 
+        "Instrument Number","Legal Description", "County", "Grantor", "Grantee", "Volume", "Page", 
         "Instrument Date", "Instrument Number", "Section", "Township", 
         "Range or Block (S-T-R)", "Abstract Number", "Survey", "Quarter Call", 
         "Book Type", "Instrument Type", "Instrument Type Alias", "Subdivision", 
@@ -36,7 +36,7 @@ def extract_strict_schema_fields():
         "Tract Description (City Block)"
     ]
     
-    # Initialize the results table with empty values for every single field
+    # Initialize the tracking map record with empty strings
     extracted_record = {field: "" for field in required_schema}
     
     with sync_playwright() as p:
@@ -45,7 +45,7 @@ def extract_strict_schema_fields():
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0"
         )
         
-        # Inject your refreshed persistent authorization session parameters
+        # Inject your persistent authorization cookie session parameters
         context.add_cookies([
             {"name": "authToken", "value": "25af87ab-dbfc-4a04-818d-4a1b12c0cd6e", "domain": "donaana.nm.publicsearch.us", "path": "/"},
             {"name": "authToken.sig", "value": "jxPPnMHPIk62NJbem7TFsyYz9xA", "domain": "donaana.nm.publicsearch.us", "path": "/"}
@@ -55,51 +55,43 @@ def extract_strict_schema_fields():
         print(f"Loading document tracking preview target layout: {TARGET_URL}")
         page.goto(TARGET_URL, wait_until="networkidle")
         
-        # Enforce an extended wait block to let the client-side JavaScript load the summary fields
+        # Enforce the script timing window to allow background javascript to populate the screen
         print("Waiting 6 seconds for dynamic data tables to render on screen...")
         time.sleep(6)
         
-        print("Beginning targeted schema property parsing...")
-        
-        # 2. Extract every layout text block from the body container
+        print("Beginning horizontal matrix property parsing...")
         body_text = page.locator("body").inner_text()
         lines = [line.strip() for line in body_text.split("\n") if line.strip()]
         
-        # 3. Match keys based on text proximity rules
+        # Proximity parsing match loops
         for field in required_schema:
             for idx, line in enumerate(lines):
-                # Normalize line formatting to verify clean label text match strings
                 clean_line = line.replace(":", "").strip().lower()
-                
                 if clean_line == field.lower():
-                    # Safety check: Grab the text block sitting directly below the matched label string
                     if idx + 1 < len(lines):
                         candidate_value = lines[idx + 1]
-                        
-                        # Ensure the captured row isn't just another core schema tracking block label name
                         if not any(f.lower() == candidate_value.replace(":", "").strip().lower() for f in required_schema):
                             extracted_record[field] = candidate_value
                             break
                             
         browser.close()
 
-    # 4. Stream out the complete matrix structure directly to your verification spreadsheet
-    if any(v != "" for v in extracted_record.values()):
-        # Convert the dictionary layout smoothly into separate Excel rows
-        df = pd.DataFrame(list(extracted_record.items()), columns=['Summary Field Name', 'Extracted Record Value'])
-        df.insert(0, 'Document ID', TARGET_DOC_ID)
-        
-        os.makedirs('generated', exist_ok=True)
-        output_path = "generated/extracted_document_summary.xlsx"
-        df.to_excel(output_path, index=False)
-        
-        print(f"\n=== [FINISHED] Compiled Excel sheet created safely at: {output_path} ===")
-        print(f"Total rows written: {len(df)}")
-        for k, v in list(extracted_record.items())[:8]:
-            print(f"   * {k}: {'[EMPTY]' if v == '' else v}")
-    else:
-        print("\n[CRITICAL ERROR] The data extraction pipeline returned a completely empty mapping sheet.")
-        print("Please log into your web browser and ensure your auth tokens haven't rolled over.")
+    # 2. FIX: Convert the single data map record dictionary into a horizontal database layout row
+    # Wrapping the dictionary inside a list array [extracted_record] forces columns across Row 1
+    df = pd.DataFrame([extracted_record])
+    
+    # Prepend the unique tracking Document ID column header to position it on the far left side of Row 1
+    df.insert(0, 'Document ID', TARGET_DOC_ID)
+    
+    # Save the wide 2x35 data grid out to Excel format
+    os.makedirs('generated', exist_ok=True)
+    output_path = "generated/extracted_document_summary.xlsx"
+    
+    # Save out file to directory layout
+    df.to_excel(output_path, index=False)
+    print(f"\n=== [FINISHED] Horizontal layout matrix compiled successfully ===")
+    print(f"File saved directly to: {output_path}")
+    print(f"Matrix shape output: {df.shape[0]} rows x {df.shape[1]} columns (1 ID Column + 34 Schema Columns)")
 
 if __name__ == "__main__":
     extract_strict_schema_fields()
