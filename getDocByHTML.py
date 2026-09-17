@@ -19,81 +19,73 @@ API_DATA_URL = f"{BASE_URL}/api/document/{TARGET_DOC_ID}"
 QUERY_STRING = "department=RP&keywordSearch=false&recordedDateRange=19000101%2C19800107&searchOcrText=false&searchType=quickSearch&searchValue=doe"
 TARGET_URL = f"{BASE_URL}/results?{QUERY_STRING}"
 
-def extract_with_headless_browser():
-    print("Launching headless browser orchestration engine...")
+def extract_via_shadow_data():
+    print("Launching Chromium orchestration layer...")
     
     with sync_playwright() as p:
-        # Launch an invisible Chromium instance to process the code
         browser = p.chromium.launch(headless=True)
-        
-        # Build a native context container with your specific browser signature
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0"
         )
         
-        # Inject your active login validation credentials directly into the browser context memory
+        # Apply your verified login credentials
         context.add_cookies([
             {"name": "authToken", "value": "25af87ab-dbfc-4a04-818d-4a1b12c0cd6e", "domain": "donaana.nm.publicsearch.us", "path": "/"},
             {"name": "authToken.sig", "value": "jxPPnMHPIk62NJbem7TFsyYz9xA", "domain": "donaana.nm.publicsearch.us", "path": "/"}
         ])
         
         page = context.new_page()
+        print(f"Loading document tracking preview target: {TARGET_URL}")
+        page.goto(TARGET_URL, wait_until="load")
         
-        print(f"Navigating to results index: {TARGET_URL}")
-        page.goto(TARGET_URL, wait_until="networkidle")
+        # Enforce an extended timing window to guarantee complete state data hydration
+        print("Allowing background script elements to hydrate state memory...")
+        time.sleep(6)
         
-        # Wait a brief moment for the React component framework to finish virtual rendering
-        time.sleep(3)
+        print("Scanning global window space for hidden data structures...")
         
-        # If the page loads, click directly on the table element row containing your Target Document ID
-        # This triggers the "Document Preview" sliding state layout panel inside the browser window view
-        print(f"Attempting to click result row matching ID: {TARGET_DOC_ID}")
-        target_row_selector = f"[data-id='{TARGET_DOC_ID}'], [id*='{TARGET_DOC_ID}'], tr:has-text('{TARGET_DOC_ID}')"
+        # Execute an internal memory sweep to pull out the hidden raw index parameters
+        raw_metadata = page.evaluate("""
+            () => {
+                // Sweep common framework layout vectors where Neumo caches metadata
+                const rootState = window.__PRELOADED_STATE__ || window.__INITIAL_STATE__;
+                if (rootState) return rootState;
+                
+                // Fallback: Check if there's any data element attributes sitting inside elements
+                const summaryPanel = document.querySelector('#tabpanel-summary, [id*="summary"]');
+                if (summaryPanel && summaryPanel.dataset) {
+                    return Object.assign({}, summaryPanel.dataset);
+                }
+                
+                return null;
+            }
+        """)
         
-        try:
-            page.locator(target_row_selector).first.click(timeout=5000)
-            print(" -> Click registered. Waiting for Summary Panel text fields to draw...")
-            time.sleep(2)
-        except Exception:
-            print(" -> Row selector not immediately clickable. Proceeding to direct viewport content check...")
-
-        # Directly navigate the browser frame to the explicit preview viewer layout if necessary
-        page.goto(f"{BASE_URL}/doc/{TARGET_DOC_ID}", wait_until="networkidle")
-        time.sleep(3)
-
-        print("Isolating summary sheet components...")
         record_fields = {}
         
-        # Extract data directly from the dynamic text elements on the screen
-        # We target the key-value labels inside the dynamically rendered panel
-        labels = page.locator("dt, label, .summary-label, td:first-child").all_text_contents()
-        values = page.locator("dd, span, .summary-value, td:nth-child(2)").all_text_contents()
-        
-        # If generic text arrays populate, map them together into clear structural entries
-        if labels and values:
-            for lbl, val in zip(labels, values):
-                clean_k = lbl.replace(":", "").strip()
-                clean_v = val.strip()
-                if clean_k and clean_v and len(clean_k) < 50:
-                    record_fields[clean_k] = clean_v
-
-        # Fallback Strategy: Sweep plain inner text layouts if custom element selectors are obfuscated
-        if not record_fields:
-            print("Dynamic elements hidden. Extracting deep text string lines...")
-            raw_text = page.locator("body").inner_text()
-            lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
+        if raw_metadata:
+            print(" -> [SUCCESS] Located data tree inside application context variables.")
+            # Deep search the extracted map to isolate keys like book, page, or instrument
+            record_fields = parse_nested_state_tree(raw_metadata, TARGET_DOC_ID)
             
-            target_anchors = ["Instrument Number", "Number of Pages", "Recorded Date", "Book", "Page"]
-            for anchor in target_anchors:
-                for idx, line in enumerate(lines):
-                    if anchor.lower() in line.lower() and idx + 1 < len(lines):
-                        record_fields[anchor] = lines[idx + 1]
-                        break
+        # Fallback Strategy: Target specific elements via dynamic cell processing
+        if not record_fields:
+            print(" -> State variables clear. Initiating direct panel element scanner...")
+            # Locate all visible text nodes in the summary panel area
+            panel_text = page.locator("#tabpanel-summary, .summary-panel, main").first.inner_text()
+            lines = [l.strip() for l in panel_text.split("\n") if l.strip()]
+            
+            # Map standard record fields if they exist sequentially in the layout text stream
+            for i in range(0, len(lines) - 1):
+                clean_key = lines[i].replace(":", "").strip()
+                # Check for standard record index fields
+                if any(k in clean_key.lower() for k in ["instrument", "book", "page", "recorded"]):
+                    if len(clean_key) < 40:
+                        record_fields[clean_key] = lines[i + 1]
 
-        # Shut down the background automated browser session
         browser.close()
 
-    # Stream out the captured metrics directly to your Excel template workbook
+    # Excel output writing phase
     if record_fields:
         df = pd.DataFrame(list(record_fields.items()), columns=['Summary Field Name', 'Extracted Record Value'])
         df.insert(0, 'Document ID', TARGET_DOC_ID)
@@ -101,14 +93,30 @@ def extract_with_headless_browser():
         os.makedirs('generated', exist_ok=True)
         output_path = "generated/extracted_document_summary.xlsx"
         df.to_excel(output_path, index=False)
-        print(f"\n=== [SUCCESS] Summary file successfully generated at: {output_path} ===")
+        print(f"\n=== [FINISHED] Summary sheet written successfully to: {output_path} ===")
         for k, v in list(record_fields.items())[:6]:
             print(f"   * {k}: {v}")
     else:
-        print("\n[CRITICAL ERROR] Automated rendering returned an empty data map. Please confirm your account access rights.")
+        print("\n[CRITICAL FAILURE] Document properties missing from page context. Check browser render targets.")
+
+def parse_nested_state_tree(node, target_id):
+    """Deep extracts simple flat parameters if the script locates the state array."""
+    if isinstance(node, dict):
+        current_id = str(node.get('id', '')) or str(node.get('documentId', ''))
+        if current_id == target_id:
+            # Flatten out atomic tracking elements
+            return {str(k): str(v) for k, v in node.items() if isinstance(v, (str, int, float, bool))}
+        for k, v in node.items():
+            res = parse_nested_state_tree(v, target_id)
+            if res: return res
+    elif isinstance(node, list):
+        for item in node:
+            res = parse_nested_state_tree(item, target_id)
+            if res: return res
+    return None
 
 if __name__ == "__main__":
-    extract_with_headless_browser()
+    extract_via_shadow_data()
 
 
 #
