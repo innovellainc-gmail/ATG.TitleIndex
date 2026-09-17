@@ -17,10 +17,27 @@ API_DATA_URL = f"{BASE_URL}/api/document/{TARGET_DOC_ID}"
 # We go back to the ONLY page that holds raw index data: the search results page
 # Reconstruct the exact search results routing path used by your browser
 QUERY_STRING = "department=RP&keywordSearch=false&recordedDateRange=19000101%2C19800107&searchOcrText=false&searchType=quickSearch&searchValue=doe"
-TARGET_URL = f"{BASE_URL}/results?{QUERY_STRING}"
+# Force the browser directly to the explicit document profile view path
+TARGET_URL = f"{BASE_URL}/doc/{TARGET_DOC_ID}"
 
-def extract_via_shadow_data():
-    print("Launching Chromium orchestration layer...")
+def extract_strict_schema_fields():
+    print("Launching Chromium browser automation framework...")
+    
+    # 1. Hardcode your exact 34 required title index fields as a clean schema framework
+    required_schema = [
+        "Legal Description", "County", "Grantor", "Grantee", "Volume", "Page", 
+        "Instrument Date", "Instrument Number", "Section", "Township", 
+        "Range or Block (S-T-R)", "Abstract Number", "Survey", "Quarter Call", 
+        "Book Type", "Instrument Type", "Instrument Type Alias", "Subdivision", 
+        "Subdivision Alias", "Lot (Sub)", "Block (Sub)", "Acres", "File Date", 
+        "Instrument Type Group", "Prior Reference Instrument Number", 
+        "Prior Reference Volume", "Prior Reference Page", "State", "APN #", 
+        "Street Address", "City (Address)", "State (Address)", "Zip (Address)", 
+        "Tract Description (City Block)"
+    ]
+    
+    # Initialize the results table with empty values for every single field
+    extracted_record = {field: "" for field in required_schema}
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -28,95 +45,66 @@ def extract_via_shadow_data():
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0"
         )
         
-        # Apply your verified login credentials
+        # Inject your refreshed persistent authorization session parameters
         context.add_cookies([
             {"name": "authToken", "value": "25af87ab-dbfc-4a04-818d-4a1b12c0cd6e", "domain": "donaana.nm.publicsearch.us", "path": "/"},
             {"name": "authToken.sig", "value": "jxPPnMHPIk62NJbem7TFsyYz9xA", "domain": "donaana.nm.publicsearch.us", "path": "/"}
         ])
         
         page = context.new_page()
-        print(f"Loading document tracking preview target: {TARGET_URL}")
-        page.goto(TARGET_URL, wait_until="load")
+        print(f"Loading document tracking preview target layout: {TARGET_URL}")
+        page.goto(TARGET_URL, wait_until="networkidle")
         
-        # Enforce an extended timing window to guarantee complete state data hydration
-        print("Allowing background script elements to hydrate state memory...")
+        # Enforce an extended wait block to let the client-side JavaScript load the summary fields
+        print("Waiting 6 seconds for dynamic data tables to render on screen...")
         time.sleep(6)
         
-        print("Scanning global window space for hidden data structures...")
+        print("Beginning targeted schema property parsing...")
         
-        # Execute an internal memory sweep to pull out the hidden raw index parameters
-        raw_metadata = page.evaluate("""
-            () => {
-                // Sweep common framework layout vectors where Neumo caches metadata
-                const rootState = window.__PRELOADED_STATE__ || window.__INITIAL_STATE__;
-                if (rootState) return rootState;
+        # 2. Extract every layout text block from the body container
+        body_text = page.locator("body").inner_text()
+        lines = [line.strip() for line in body_text.split("\n") if line.strip()]
+        
+        # 3. Match keys based on text proximity rules
+        for field in required_schema:
+            for idx, line in enumerate(lines):
+                # Normalize line formatting to verify clean label text match strings
+                clean_line = line.replace(":", "").strip().lower()
                 
-                // Fallback: Check if there's any data element attributes sitting inside elements
-                const summaryPanel = document.querySelector('#tabpanel-summary, [id*="summary"]');
-                if (summaryPanel && summaryPanel.dataset) {
-                    return Object.assign({}, summaryPanel.dataset);
-                }
-                
-                return null;
-            }
-        """)
-        
-        record_fields = {}
-        
-        if raw_metadata:
-            print(" -> [SUCCESS] Located data tree inside application context variables.")
-            # Deep search the extracted map to isolate keys like book, page, or instrument
-            record_fields = parse_nested_state_tree(raw_metadata, TARGET_DOC_ID)
-            
-        # Fallback Strategy: Target specific elements via dynamic cell processing
-        if not record_fields:
-            print(" -> State variables clear. Initiating direct panel element scanner...")
-            # Locate all visible text nodes in the summary panel area
-            panel_text = page.locator("#tabpanel-summary, .summary-panel, main").first.inner_text()
-            lines = [l.strip() for l in panel_text.split("\n") if l.strip()]
-            
-            # Map standard record fields if they exist sequentially in the layout text stream
-            for i in range(0, len(lines) - 1):
-                clean_key = lines[i].replace(":", "").strip()
-                # Check for standard record index fields
-                if any(k in clean_key.lower() for k in ["instrument", "book", "page", "recorded"]):
-                    if len(clean_key) < 40:
-                        record_fields[clean_key] = lines[i + 1]
-
+                if clean_line == field.lower():
+                    # Safety check: Grab the text block sitting directly below the matched label string
+                    if idx + 1 < len(lines):
+                        candidate_value = lines[idx + 1]
+                        
+                        # Ensure the captured row isn't just another core schema tracking block label name
+                        if not any(f.lower() == candidate_value.replace(":", "").strip().lower() for f in required_schema):
+                            extracted_record[field] = candidate_value
+                            break
+                            
         browser.close()
 
-    # Excel output writing phase
-    if record_fields:
-        df = pd.DataFrame(list(record_fields.items()), columns=['Summary Field Name', 'Extracted Record Value'])
+    # 4. Stream out the complete matrix structure directly to your verification spreadsheet
+    if any(v != "" for v in extracted_record.values()):
+        # Convert the dictionary layout smoothly into separate Excel rows
+        df = pd.DataFrame(list(extracted_record.items()), columns=['Summary Field Name', 'Extracted Record Value'])
         df.insert(0, 'Document ID', TARGET_DOC_ID)
         
         os.makedirs('generated', exist_ok=True)
         output_path = "generated/extracted_document_summary.xlsx"
         df.to_excel(output_path, index=False)
-        print(f"\n=== [FINISHED] Summary sheet written successfully to: {output_path} ===")
-        for k, v in list(record_fields.items())[:6]:
-            print(f"   * {k}: {v}")
+        
+        print(f"\n=== [FINISHED] Compiled Excel sheet created safely at: {output_path} ===")
+        print(f"Total rows written: {len(df)}")
+        for k, v in list(extracted_record.items())[:8]:
+            print(f"   * {k}: {'[EMPTY]' if v == '' else v}")
     else:
-        print("\n[CRITICAL FAILURE] Document properties missing from page context. Check browser render targets.")
-
-def parse_nested_state_tree(node, target_id):
-    """Deep extracts simple flat parameters if the script locates the state array."""
-    if isinstance(node, dict):
-        current_id = str(node.get('id', '')) or str(node.get('documentId', ''))
-        if current_id == target_id:
-            # Flatten out atomic tracking elements
-            return {str(k): str(v) for k, v in node.items() if isinstance(v, (str, int, float, bool))}
-        for k, v in node.items():
-            res = parse_nested_state_tree(v, target_id)
-            if res: return res
-    elif isinstance(node, list):
-        for item in node:
-            res = parse_nested_state_tree(item, target_id)
-            if res: return res
-    return None
+        print("\n[CRITICAL ERROR] The data extraction pipeline returned a completely empty mapping sheet.")
+        print("Please log into your web browser and ensure your auth tokens haven't rolled over.")
 
 if __name__ == "__main__":
-    extract_via_shadow_data()
+    extract_strict_schema_fields()
+
+
 
 
 #
