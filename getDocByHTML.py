@@ -1,52 +1,99 @@
 import os
+import time
 import re
 import json
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
+from playwright.sync_api import sync_playwright
 
 BASE_URL = "https://donaana.nm.publicsearch.us"
-TARGET_DOC_ID = "118511438"
+TARGET_DOC_ID = "118511438" #Instrument Number: 723762
 
 # FIX: Target the direct internal HTML partial sub-route used to serve the summary content
-TARGET_PARTIAL_URL = f"{BASE_URL}/doc/{TARGET_DOC_ID}/initial"
+# 1. Target the internal core API data endpoint instead of layout views
+API_DATA_URL = f"{BASE_URL}/api/document/{TARGET_DOC_ID}"
 
-session = requests.Session()
-session.cookies.update({
-    "authToken": "25af87ab-dbfc-4a04-818d-4a1b12c0cd6e",
-    "authToken.sig": "jxPPnMHPIk62NJbem7TFsyYz9xA"
-})
-session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    # Point referer to the base document view to satisfy security checks
-    "Referer": f"{BASE_URL}/doc/{TARGET_DOC_ID}"
-})
+# We go back to the ONLY page that holds raw index data: the search results page
+# Reconstruct the exact search results routing path used by your browser
+QUERY_STRING = "department=RP&keywordSearch=false&recordedDateRange=19000101%2C19800107&searchOcrText=false&searchType=quickSearch&searchValue=doe"
+TARGET_URL = f"{BASE_URL}/results?{QUERY_STRING}"
 
-def extract_summary_direct():
-    print(f"Fetching direct data segment from: {TARGET_PARTIAL_URL}")
-    response = session.get(TARGET_PARTIAL_URL)
+def extract_with_headless_browser():
+    print("Launching headless browser orchestration engine...")
     
-    if response.status_code != 200:
-        print(f"[ERROR] Access denied. Status code: {response.status_code}")
-        return
+    with sync_playwright() as p:
+        # Launch an invisible Chromium instance to process the code
+        browser = p.chromium.launch(headless=True)
         
-    soup = BeautifulSoup(response.text, 'html.parser')
-    record_fields = {}
-    
-    # Isolate all standard table data grid values or definition blocks inside the returned partial layout
-    rows = soup.find_all(['tr', 'div', 'dt'])
-    
-    # Process text layout map lines directly
-    text_lines = [line.strip() for line in soup.get_text(separator="\n").split("\n") if line.strip()]
-    
-    # Neumo structures these text arrays sequentially: [Label, Value, Label, Value]
-    for i in range(0, len(text_lines) - 1, 2):
-        key = text_lines[i].replace(":", "").strip()
-        val = text_lines[i+1].strip()
-        if key and val and len(key) < 50:  # Enforce reasonable constraint boundaries on keys
-            record_fields[key] = val
+        # Build a native context container with your specific browser signature
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0"
+        )
+        
+        # Inject your active login validation credentials directly into the browser context memory
+        context.add_cookies([
+            {"name": "authToken", "value": "25af87ab-dbfc-4a04-818d-4a1b12c0cd6e", "domain": "donaana.nm.publicsearch.us", "path": "/"},
+            {"name": "authToken.sig", "value": "jxPPnMHPIk62NJbem7TFsyYz9xA", "domain": "donaana.nm.publicsearch.us", "path": "/"}
+        ])
+        
+        page = context.new_page()
+        
+        print(f"Navigating to results index: {TARGET_URL}")
+        page.goto(TARGET_URL, wait_until="networkidle")
+        
+        # Wait a brief moment for the React component framework to finish virtual rendering
+        time.sleep(3)
+        
+        # If the page loads, click directly on the table element row containing your Target Document ID
+        # This triggers the "Document Preview" sliding state layout panel inside the browser window view
+        print(f"Attempting to click result row matching ID: {TARGET_DOC_ID}")
+        target_row_selector = f"[data-id='{TARGET_DOC_ID}'], [id*='{TARGET_DOC_ID}'], tr:has-text('{TARGET_DOC_ID}')"
+        
+        try:
+            page.locator(target_row_selector).first.click(timeout=5000)
+            print(" -> Click registered. Waiting for Summary Panel text fields to draw...")
+            time.sleep(2)
+        except Exception:
+            print(" -> Row selector not immediately clickable. Proceeding to direct viewport content check...")
 
+        # Directly navigate the browser frame to the explicit preview viewer layout if necessary
+        page.goto(f"{BASE_URL}/doc/{TARGET_DOC_ID}", wait_until="networkidle")
+        time.sleep(3)
+
+        print("Isolating summary sheet components...")
+        record_fields = {}
+        
+        # Extract data directly from the dynamic text elements on the screen
+        # We target the key-value labels inside the dynamically rendered panel
+        labels = page.locator("dt, label, .summary-label, td:first-child").all_text_contents()
+        values = page.locator("dd, span, .summary-value, td:nth-child(2)").all_text_contents()
+        
+        # If generic text arrays populate, map them together into clear structural entries
+        if labels and values:
+            for lbl, val in zip(labels, values):
+                clean_k = lbl.replace(":", "").strip()
+                clean_v = val.strip()
+                if clean_k and clean_v and len(clean_k) < 50:
+                    record_fields[clean_k] = clean_v
+
+        # Fallback Strategy: Sweep plain inner text layouts if custom element selectors are obfuscated
+        if not record_fields:
+            print("Dynamic elements hidden. Extracting deep text string lines...")
+            raw_text = page.locator("body").inner_text()
+            lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
+            
+            target_anchors = ["Instrument Number", "Number of Pages", "Recorded Date", "Book", "Page"]
+            for anchor in target_anchors:
+                for idx, line in enumerate(lines):
+                    if anchor.lower() in line.lower() and idx + 1 < len(lines):
+                        record_fields[anchor] = lines[idx + 1]
+                        break
+
+        # Shut down the background automated browser session
+        browser.close()
+
+    # Stream out the captured metrics directly to your Excel template workbook
     if record_fields:
         df = pd.DataFrame(list(record_fields.items()), columns=['Summary Field Name', 'Extracted Record Value'])
         df.insert(0, 'Document ID', TARGET_DOC_ID)
@@ -54,17 +101,14 @@ def extract_summary_direct():
         os.makedirs('generated', exist_ok=True)
         output_path = "generated/extracted_document_summary.xlsx"
         df.to_excel(output_path, index=False)
-        print(f"\n=== [SUCCESS] Summary successfully generated at: {output_path} ===")
-        for k, v in list(record_fields.items())[:5]:
+        print(f"\n=== [SUCCESS] Summary file successfully generated at: {output_path} ===")
+        for k, v in list(record_fields.items())[:6]:
             print(f"   * {k}: {v}")
     else:
-        print("\n[CRITICAL ERROR] The partial layout string returned empty text nodes. Please inspect response.text data.")
+        print("\n[CRITICAL ERROR] Automated rendering returned an empty data map. Please confirm your account access rights.")
 
-extract_summary_direct()
-
-
-
-
+if __name__ == "__main__":
+    extract_with_headless_browser()
 
 
 #
